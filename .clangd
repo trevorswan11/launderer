@@ -1,0 +1,11 @@
+CompileFlags:
+    CompilationDatabase: "build"
+    Add:
+        - "-D__block="
+        - "-DCONFIG_IDF_TARGET_ESP32"
+        - "--target=xtensa-esp32-elf"
+    Remove:
+        - "-mlongcalls"
+        - "-fno-shrink-wrap"
+        - "-fno-tree-switch-conversion"
+        - "-fstrict-volatile-bitfields"
