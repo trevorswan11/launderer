@@ -1,2 +1,2 @@
-# potion
-A motion detector for ESP32
+# launderer
+CWRU ECSE395 Semester Project
