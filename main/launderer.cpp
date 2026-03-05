@@ -1,36 +1,75 @@
 #include <cmath>
-#include <format>
+#include <optional>
+#include <print>
 #include <thread>
 
+#include "gpio_cxx.hpp"
 #include "lcd.hpp"
-#include "potentiometer.hpp"
-#include "rgb_led.hpp"
-#include "touch.hpp"
+#include "pin_layout.hpp"
+#include "pins.hpp"
 
-using namespace idf;
 using namespace std::chrono_literals;
 
-const uint32_t DEEP_BLUE   = 0x1A2FF9;
-const uint32_t HAPPY_COLOR = 0x28E96B;
+enum class Dirtiness {
+    NORMAL,
+    DIRTY,
+    NASTY,
+};
 
 extern "C" auto app_main() -> void {
-    dev::Potentiometer pot{dev::pin_layout::A4};
-    dev::Touch         touch{dev::pin_layout::A3};
-    dev::RGBLed        rgb{dev::pin_layout::A7, dev::pin_layout::A8, dev::pin_layout::A9};
-    dev::Lcd           lcd{0x27};
-
+    dev::Lcd lcd{0x27};
     lcd.init();
+
+    dev::DigitalPinIn white{15};
+    dev::DigitalPinIn red{33};
+    dev::DigitalPinIn blue{14};
+    dev::DigitalPinIn yellow{32};
+
+    dev::PwmOut pump{dev::pin_layout::A0};
+    bool        tared = false;
 
     while (true) {
         lcd.clear();
-        const auto pot_percent = static_cast<float>(pot.read()) / pot.max_value();
-        const auto touched     = touch.is_pressed();
-        const auto base_color  = touched ? HAPPY_COLOR : DEEP_BLUE;
-        rgb.update(base_color, pot_percent);
+        pump.write(4'095);
+        const bool white_pressed = !white;
+        if (tared) {
+            lcd.print("Tared Scale :)");
+            lcd.set_cursor(0, 1);
+            lcd.print("Select Dirt");
+        } else {
+            lcd.print("Tare scale!");
+        }
 
-        lcd.print(touched ? "YAY! Thank you!" : "I'm so blue :(", 0, 0);
-        const auto led_str = std::format("LED = {}", rgb.to_string());
-        lcd.print(led_str, 0, 1);
+        std::optional<Dirtiness> dirt;
+        if (white_pressed) {
+            tared = true;
+        } else if (tared) {
+            if (!red) {
+                dirt = Dirtiness::NORMAL;
+            } else if (!blue) {
+                dirt = Dirtiness::DIRTY;
+            } else if (!yellow) {
+                dirt = Dirtiness::NASTY;
+            }
+
+            if (dirt) {
+                lcd.clear();
+                tared = false;
+
+                switch (*dirt) {
+                case Dirtiness::NORMAL: lcd.print("Normal load!"); break;
+                case Dirtiness::DIRTY:  lcd.print("Dirty load!"); break;
+                case Dirtiness::NASTY:  lcd.print("Nasty load!"); break;
+                }
+
+                lcd.set_cursor(0, 1);
+                lcd.print("Dispensing!");
+
+                pump.write(0);
+                std::this_thread::sleep_for(2s);
+                pump.write(4'095);
+            }
+        }
 
         std::this_thread::sleep_for(50ms);
     }

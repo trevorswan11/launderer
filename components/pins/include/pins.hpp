@@ -10,6 +10,26 @@
 
 namespace dev {
 
+class DigitalPinIn {
+  public:
+    // Creates a pin defaulted to pe
+    explicit DigitalPinIn(Pin pin) : pin_{idf::GPIONum{pin}} {}
+    explicit DigitalPinIn(Pin pin, idf::GPIOPullMode mode) : DigitalPinIn{pin} {
+        set_pull_mode(mode);
+    }
+
+    // Returns `true` if the pin is high.
+    auto read() -> bool { return pin_.get_level() == idf::GPIOLevel::HIGH; }
+    auto set_pull_mode(idf::GPIOPullMode mode) -> void { pin_.set_pull_mode(mode); }
+    auto enable_wakeup(idf::GPIOWakeupIntrType mode) -> void { pin_.wakeup_enable(mode); }
+    auto disable_wakeup() -> void { pin_.wakeup_disable(); }
+
+    operator bool() { return read(); }
+
+  private:
+    idf::GPIOInput pin_;
+};
+
 class DigitalPinOut {
   public:
     explicit DigitalPinOut(Pin pin) : pin_{idf::GPIONum{pin}} {}
