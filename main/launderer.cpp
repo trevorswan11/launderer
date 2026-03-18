@@ -20,18 +20,22 @@ extern "C" auto app_main() -> void {
     dev::Lcd lcd{0x27};
     lcd.init();
 
-    dev::DigitalPinIn white{15};
-    dev::DigitalPinIn red{33};
-    dev::DigitalPinIn blue{14};
-    dev::DigitalPinIn yellow{32};
+    dev::DigitalPinIn white_tare{15, idf::GPIOPullMode::PULLDOWN()};
+    dev::DigitalPinIn red{33, idf::GPIOPullMode::PULLDOWN()};
+    dev::DigitalPinIn blue{14, idf::GPIOPullMode::PULLDOWN()};
+    dev::DigitalPinIn yellow{32, idf::GPIOPullMode::PULLDOWN()};
+    dev::DigitalPinIn white_reset{27, idf::GPIOPullMode::PULLDOWN()};
 
-    dev::PwmOut pump{dev::pin_layout::A0};
-    bool        tared = false;
+    dev::PwmOut   pump{dev::pin_layout::A0};
+    dev::AnalogIn analog{dev::pin_layout::A1};
+    bool          tared = false;
 
     while (true) {
         lcd.clear();
         pump.write(4'095);
-        const bool white_pressed = !white;
+
+        if (white_reset) { tared = false; }
+
         if (tared) {
             lcd.print("Tared Scale :)");
             lcd.set_cursor(0, 1);
@@ -39,17 +43,18 @@ extern "C" auto app_main() -> void {
         } else {
             lcd.print("Tare scale!");
         }
+        std::println("{}", analog.read());
 
         std::optional<Dirtiness> dirt;
-        if (white_pressed) {
+        if (white_tare) {
             tared = true;
         } else if (tared) {
-            if (!red) {
-                dirt = Dirtiness::NORMAL;
-            } else if (!blue) {
-                dirt = Dirtiness::DIRTY;
-            } else if (!yellow) {
-                dirt = Dirtiness::NASTY;
+            if (red) {
+                dirt.emplace(Dirtiness::NORMAL);
+            } else if (blue) {
+                dirt.emplace(Dirtiness::DIRTY);
+            } else if (yellow) {
+                dirt.emplace(Dirtiness::NASTY);
             }
 
             if (dirt) {
