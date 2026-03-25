@@ -3,3 +3,4 @@ media/MVP_Large-Load.mov filter=lfs diff=lfs merge=lfs -text
 media/MVP_Medium-Load.mov filter=lfs diff=lfs merge=lfs -text
 media/MVP_Photo.png filter=lfs diff=lfs merge=lfs -text
 media/MVP_Small-Load.mov filter=lfs diff=lfs merge=lfs -text
+media/MVP_Safeguard.mov filter=lfs diff=lfs merge=lfs -text
