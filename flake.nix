@@ -34,6 +34,9 @@
           buildInputs = [
             esp-idf-full
             clang-tools
+            (python3.withPackages (p: [
+              p.numpy
+            ]))
           ];
         };
       }

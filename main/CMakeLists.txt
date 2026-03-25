@@ -1,4 +1,4 @@
-set(DEPS lcd potentiometer touch rgb_led pins)
+set(DEPS lcd pins)
 
 idf_component_register(SRCS "launderer.cpp"
     INCLUDE_DIRS "."
