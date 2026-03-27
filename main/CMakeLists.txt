@@ -1,4 +1,4 @@
-set(DEPS nvs_flash esp_adc driver hd44780 pcf8574)
+set(DEPS nvs_flash esp_adc driver hd44780 pcf8574 lcd adc)
 set(MAIN_SRCS "placeholder.c")
 
 idf_component_register(

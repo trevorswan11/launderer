@@ -4,9 +4,9 @@ const idf = @import("esp_idf");
 
 const AnalogIn = @import("peripherals/AnalogIn.zig");
 const DigitalPinIn = @import("peripherals/DigitalPinIn.zig");
-const DigitalPinOut = @import("peripherals/DigitalPinOut.zig");
 const Lcd = @import("peripherals/Lcd.zig");
 const PwmOut = @import("peripherals/PwmOut.zig");
+const layout = @import("peripherals/pin_layout.zig");
 
 comptime {
     @export(&main, .{ .name = "app_main" });
@@ -27,9 +27,9 @@ var tare_offset: i32 = 0;
 var tared = false;
 
 // From desmos fit
-const fit_A = -478286.117341;
-const fit_B = 830.395033677;
-const fit_C = 580.401879334;
+const fit_A: f32 = -478286.117341;
+const fit_B: f32 = 830.395033677;
+const fit_C: f32 = 580.401879334;
 
 fn stonesFromAdc(zeroed: i32) f32 {
     if (zeroed <= 0) return 0.0;
@@ -38,7 +38,7 @@ fn stonesFromAdc(zeroed: i32) f32 {
 }
 
 // The amount of time to reach the tip of the tube
-const prime_time_ms: u64 = 150;
+const prime_time_ms: idf.sys.TickType_t = 150;
 const medium_normal: f32 = 0.5;
 const medium_dirty: f32 = 1.0;
 const medium_nasty: f32 = 1.5;
@@ -81,19 +81,19 @@ fn main() callconv(.c) void {
     const allocator = arena.allocator();
 
     // LCD initialization
-    var lcd: Lcd = .init(allocator, 0x27, .SDA, .SCL);
+    var lcd = Lcd.init(allocator, 0x27, .SDA, .SCL) catch @panic("Failed to create LCD");
     lcd.begin() catch @panic("Failed to begin LCD");
 
     // Buttons
-    const white_tare: DigitalPinIn = .init(.D15, .pulldown_only) catch @panic("Failed to create tare");
-    const red: DigitalPinIn = .init(.D33, .pulldown_only) catch @panic("Failed to create red");
-    const blue: DigitalPinIn = .init(.D14, .pulldown_only) catch @panic("Failed to create blue");
-    const yellow: DigitalPinIn = .init(.D32, .pulldown_only) catch @panic("Failed to create yellow");
-    const white_reset: DigitalPinIn = .init(.D27, .pulldown_only) catch @panic("Failed to create reset");
+    const white_tare = DigitalPinIn.init(layout.D15, .pulldown_only) catch @panic("Failed to create tare");
+    const red = DigitalPinIn.init(layout.D33, .pulldown_only) catch @panic("Failed to create red");
+    const blue = DigitalPinIn.init(layout.D14, .pulldown_only) catch @panic("Failed to create blue");
+    const yellow = DigitalPinIn.init(layout.D32, .pulldown_only) catch @panic("Failed to create yellow");
+    const white_reset = DigitalPinIn.init(layout.D27, .pulldown_only) catch @panic("Failed to create reset");
 
     // PP
-    const pump: PwmOut = .init(.A0) catch @panic("Failed to create pump");
-    const pressure_sensor: AnalogIn = .init(.A1) catch @panic("Failed to create pressure sensor");
+    const pump = PwmOut.init(.A0) catch @panic("Failed to create pump");
+    var pressure_sensor = AnalogIn.init(.A1) catch @panic("Failed to create pressure sensor");
 
     // Main loop
     while (true) {
@@ -122,8 +122,8 @@ fn main() callconv(.c) void {
         }
 
         // UI Update
-        lcd.clear();
-        pump.write(4095);
+        lcd.clear() catch continue;
+        pump.write(4095) catch continue;
 
         if (tared) {
             lcd.printAt("Tared Scale :)", 0, 0) catch continue;
@@ -154,7 +154,7 @@ fn main() callconv(.c) void {
 
         // Dispense Logic, configured in active low
         if (selected_dirt) |dirt| {
-            lcd.clear();
+            lcd.clear() catch continue;
             tared = false;
 
             const msg = switch (dirt) {
@@ -166,13 +166,13 @@ fn main() callconv(.c) void {
             lcd.printAt("Dispensing!", 0, 1) catch continue;
 
             const time_ms = getDispenseTimeMs(stones, dirt);
-            pump.write(0);
-            sleepMs(time_ms);
-            pump.write(4095);
+            pump.write(0) catch continue;
+            idf.sleepMs(time_ms);
+            pump.write(4095) catch continue;
         }
 
         // TODO: Maybe change delay for better average and refresh of LCD
-        sleepMs(25);
+        idf.sleepMs(25);
     }
 }
 
@@ -186,6 +186,6 @@ pub const std_options: std.Options = .{
     .logFn = idf.log.espLogFn,
 };
 
-fn sleepMs(time_ms: idf.sys.TickType_t) void {
-    idf.sys.vTaskDelay(@divTrunc(time_ms, idf.sys.portTICK_PERIOD_MS));
+export fn __udivti3() void {
+    @panic("__udivti3: what are you doing here?");
 }

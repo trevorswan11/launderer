@@ -132,3 +132,7 @@ comptime {
     _ = pthread;
     if (@hasDecl(sys, "HAS_ESP_MATTER")) _ = matter;
 }
+
+pub fn sleepMs(time_ms: sys.TickType_t) void {
+    sys.vTaskDelay(@divTrunc(time_ms, sys.portTICK_PERIOD_MS));
+}
