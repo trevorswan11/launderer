@@ -1,29 +1,18 @@
-set(DEPS lcd pins)
+set(DEPS nvs_flash driver hd44780 pcf8574)
+set(MAIN_SRCS "placeholder.c")
 
-idf_component_register(SRCS "launderer.cpp"
-    INCLUDE_DIRS "."
-    PRIV_REQUIRES "${DEPS}"
+idf_component_register(
+    SRCS ${MAIN_SRCS}
+    INCLUDE_DIRS "." "${CMAKE_SOURCE_DIR}/include"
+    REQUIRES ${DEPS}
 )
 
-set(IMPLICIT_C_INC "$<JOIN:${CMAKE_C_IMPLICIT_INCLUDE_DIRECTORIES},;>")
-set(IMPLICIT_CXX_INC "$<JOIN:${CMAKE_CXX_IMPLICIT_INCLUDE_DIRECTORIES},;>")
-set(TARGET_INC
-    "$<JOIN:$<TARGET_PROPERTY:${COMPONENT_LIB},INCLUDE_DIRECTORIES>,;>"
-)
+include(${CMAKE_SOURCE_DIR}/cmake/zig-config.cmake)
 
-set(INCLUDE_PATH_FILE "${CMAKE_BINARY_DIR}/include_dirs.txt")
-file(GENERATE
-    OUTPUT "${INCLUDE_PATH_FILE}"
-    CONTENT "${TARGET_INC};${IMPLICIT_INC};${IMPLICIT_CXX_INC}"
-)
+# FIXME: need add <cmath> for build kalman
+if(TARGET __idf_espressif__esp-dsp AND IDF_VERSION_MAJOR EQUAL 6)
+    target_compile_options(__idf_espressif__esp-dsp PRIVATE
+        $<$<COMPILE_LANGUAGE:CXX>:-includecmath>
+    )
+endif()
 
-add_custom_target(fix_clangd
-    COMMAND ${PYTHON} "${CMAKE_SOURCE_DIR}/scripts/resolve_includes.py"
-        "${CMAKE_BINARY_DIR}/compile_commands.json"
-        ${INCLUDE_PATH_FILE}
-    DEPENDS "${INCLUDE_PATH_FILE}"
-    COMMENT "Resolving C/C++ includes..."
-    VERBATIM
-)
-
-add_dependencies(${COMPONENT_LIB} fix_clangd)
