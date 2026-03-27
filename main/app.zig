@@ -8,6 +8,8 @@ const Lcd = @import("peripherals/Lcd.zig");
 const PwmOut = @import("peripherals/PwmOut.zig");
 const layout = @import("peripherals/pin_layout.zig");
 
+extern fn printf(noalias [*c]const u8, ...) c_int;
+
 comptime {
     @export(&main, .{ .name = "app_main" });
 }
@@ -74,6 +76,14 @@ fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness) idf.sys.TickType_t {
     return prime_time_ms + @as(idf.sys.TickType_t, @intFromFloat(duration_s * 1000.0));
 }
 
+const LastLcdWrite = enum {
+    initial,
+    tare,
+    select,
+};
+
+var last_lcd_write: LastLcdWrite = .initial;
+
 fn main() callconv(.c) void {
     var heap = idf.heap.HeapCapsAllocator.init(.{ .@"8bit" = true });
     var arena = std.heap.ArenaAllocator.init(heap.allocator());
@@ -122,19 +132,26 @@ fn main() callconv(.c) void {
         }
 
         // UI Update
-        lcd.clear() catch continue;
         pump.write(4095) catch continue;
 
         if (tared) {
-            lcd.printAt("Tared Scale :)", 0, 0) catch continue;
-            lcd.printAt("Select Dirt", 0, 1) catch continue;
+            if (last_lcd_write != .select) {
+                lcd.clear() catch continue;
+                lcd.printAt("Tared Scale :)", 0, 0) catch continue;
+                lcd.printAt("Select Dirt", 0, 1) catch continue;
+                last_lcd_write = .select;
+            }
         } else {
-            lcd.printAt("Tare scale!", 0, 0) catch continue;
+            if (last_lcd_write != .tare) {
+                lcd.clear() catch continue;
+                lcd.printAt("Tare scale!", 0, 0) catch continue;
+                last_lcd_write = .tare;
+            }
         }
 
         // Logging (TODO REMOVE)
         const stones = stonesFromAdc(zeroed);
-        std.log.info("raw={d} avg={d} zeroed={d} stones={d:.2}", .{ raw, avg, zeroed, stones });
+        _ = printf("raw=%d avg=%d zeroed=%d stones=%f\n", raw, avg, zeroed, stones);
 
         // Button Handling
         var selected_dirt: ?Dirtiness = null;
@@ -171,8 +188,7 @@ fn main() callconv(.c) void {
             pump.write(4095) catch continue;
         }
 
-        // TODO: Maybe change delay for better average and refresh of LCD
-        idf.sleepMs(25);
+        idf.sleepMs(50);
     }
 }
 
