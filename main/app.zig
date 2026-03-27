@@ -1,112 +1,178 @@
 const std = @import("std");
 const builtin = @import("builtin");
 const idf = @import("esp_idf");
-const ver = idf.ver.Version;
-const mem = std.mem;
+
+const AnalogIn = @import("peripherals/AnalogIn.zig");
+const DigitalPinIn = @import("peripherals/DigitalPinIn.zig");
+const DigitalPinOut = @import("peripherals/DigitalPinOut.zig");
+const Lcd = @import("peripherals/Lcd.zig");
+const PwmOut = @import("peripherals/PwmOut.zig");
 
 comptime {
     @export(&main, .{ .name = "app_main" });
 }
 
+const Dirtiness = enum {
+    normal,
+    dirty,
+    nasty,
+};
+
+// Global state
+const history_size: usize = 20;
+var history = [_]i32{0} ** history_size;
+var history_index: usize = 0;
+var history_full = false;
+var tare_offset: i32 = 0;
+var tared = false;
+
+// From desmos fit
+const fit_A = -478286.117341;
+const fit_B = 830.395033677;
+const fit_C = 580.401879334;
+
+fn stonesFromAdc(zeroed: i32) f32 {
+    if (zeroed <= 0) return 0.0;
+    const f_zeroed: f32 = @floatFromInt(zeroed);
+    return fit_A / (f_zeroed - fit_C) - fit_B;
+}
+
+// The amount of time to reach the tip of the tube
+const prime_time_ms: u64 = 150;
+const medium_normal: f32 = 0.5;
+const medium_dirty: f32 = 1.0;
+const medium_nasty: f32 = 1.5;
+
+const small_scalar: f32 = 1.0 / 3.0;
+const large_scalar: f32 = 1.667;
+
+// The number of go stones to be considered a medium load
+const medium_cutoff: f32 = 130.0;
+const cutoff_buffer: f32 = 15.0;
+const medium_lower_bound = medium_cutoff - cutoff_buffer;
+const medium_upper_bound = medium_cutoff + cutoff_buffer;
+
+// Any number of go stones below this should not pump
+const minimum_stone_cutoff: f32 = 10.0;
+
+fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness) idf.sys.TickType_t {
+    if (go_stones < minimum_stone_cutoff) return 0;
+
+    const scalar: f32 = if (go_stones > medium_upper_bound)
+        large_scalar
+    else if (go_stones < medium_lower_bound)
+        small_scalar
+    else
+        1.0;
+
+    const duration_s = switch (dirt) {
+        .normal => medium_normal * scalar,
+        .dirty => medium_dirty * scalar,
+        .nasty => medium_nasty * scalar,
+    };
+
+    return prime_time_ms + @as(idf.sys.TickType_t, @intFromFloat(duration_s * 1000.0));
+}
+
 fn main() callconv(.c) void {
-    // This allocator is safe to use as the backing allocator w/ arena allocator
-
-    // custom allocators (based on old raw_c_allocator)
-    // idf.heap.HeapCapsAllocator
-    // idf.heap.MultiHeapAllocator
-    // idf.heap.VPortAllocator
-
     var heap = idf.heap.HeapCapsAllocator.init(.{ .@"8bit" = true });
     var arena = std.heap.ArenaAllocator.init(heap.allocator());
     defer arena.deinit();
     const allocator = arena.allocator();
 
-    log.info("Hello, world from Zig!", .{});
+    // LCD initialization
+    var lcd: Lcd = .init(allocator, 0x27, .SDA, .SCL);
+    lcd.begin() catch @panic("Failed to begin LCD");
 
-    log.info(
-        \\[Zig Info]
-        \\* Version: {s}
-        \\* Compiler Backend: {s}
-    , .{
-        @as([]const u8, builtin.zig_version_string),
-        @tagName(builtin.zig_backend),
-    });
+    // Buttons
+    const white_tare: DigitalPinIn = .init(.D15, .pulldown_only) catch @panic("Failed to create tare");
+    const red: DigitalPinIn = .init(.D33, .pulldown_only) catch @panic("Failed to create red");
+    const blue: DigitalPinIn = .init(.D14, .pulldown_only) catch @panic("Failed to create blue");
+    const yellow: DigitalPinIn = .init(.D32, .pulldown_only) catch @panic("Failed to create yellow");
+    const white_reset: DigitalPinIn = .init(.D27, .pulldown_only) catch @panic("Failed to create reset");
 
-    log.info(
-        \\[ESP-IDF Info]
-        \\* Version: {s}
-    , .{ver.get().toString(allocator)});
+    // PP
+    const pump: PwmOut = .init(.A0) catch @panic("Failed to create pump");
+    const pressure_sensor: AnalogIn = .init(.A1) catch @panic("Failed to create pressure sensor");
 
-    log.info(
-        \\[Memory Info]
-        \\* Total: {d}
-        \\* Free: {d}
-        \\* Minimum: {d}
-    , .{
-        heap.totalSize(),
-        heap.freeSize(),
-        heap.minimumFreeSize(),
-    });
-
-    log.info("Let's have a look at your shiny {s} - {s} system! :)", .{
-        @tagName(builtin.cpu.arch),
-        builtin.cpu.model.name,
-    });
-
-    arraylist(allocator) catch |err| {
-        log.err("Error: {s}", .{@errorName(err)});
-    };
-
-    if (builtin.mode == .Debug)
-        heap.dump();
-
-    // FreeRTOS Tasks — Task.create returns !Handle; on failure panic with a clear message.
-    _ = idf.rtos.Task.create(fooTask, "foo", 1024 * 3, null, 1) catch @panic("Task foo not created");
-    _ = idf.rtos.Task.create(barTask, "bar", 1024 * 3, null, 2) catch @panic("Task bar not created");
-    _ = idf.rtos.Task.create(blinkTask, "blink", 1024 * 2, null, 5) catch @panic("Task blink not created");
-}
-
-fn blinkLED(delay_ms: u32) !void {
-    try idf.gpio.Direction.set(.@"18", .output);
+    // Main loop
     while (true) {
-        log.info("LED: ON", .{});
-        try idf.gpio.Level.set(.@"18", 1);
-        idf.rtos.Task.delayMs(delay_ms);
+        // Reading & History
+        const raw = pressure_sensor.read() catch continue;
+        history[history_index] = raw;
+        history_index = (history_index + 1) % history_size;
+        if (history_index == 0) history_full = true;
 
-        log.info("LED: OFF", .{});
-        try idf.gpio.Level.set(.@"18", 0);
-        idf.rtos.Task.delayMs(delay_ms);
-    }
-}
+        // Average Logic
+        const count: usize = if (history_full) history_size else history_index;
+        var sum: i32 = 0;
+        for (history[0..count]) |val| {
+            sum += val;
+        }
+        const avg: i32 = if (count > 0) @divTrunc(sum, @as(i32, @intCast(count))) else 0;
+        const zeroed = avg - tare_offset;
 
-fn arraylist(allocator: mem.Allocator) !void {
-    var arr: std.ArrayList(u32) = .empty;
-    defer arr.deinit(allocator);
+        // Reset Logic
+        if (white_reset.read()) {
+            tared = false;
+            tare_offset = 0;
+            history_index = 0;
+            history_full = false;
+            @memset(&history, 0);
+        }
 
-    try arr.append(allocator, 10);
-    try arr.append(allocator, 20);
-    try arr.append(allocator, 30);
+        // UI Update
+        lcd.clear();
+        pump.write(4095);
 
-    for (arr.items) |value| {
-        idf.log.ESP_LOG(allocator, idf.log.default_level, "EXAMPLE", "Arr value: {}\n", .{value});
-    }
-}
+        if (tared) {
+            lcd.printAt("Tared Scale :)", 0, 0) catch continue;
+            lcd.printAt("Select Dirt", 0, 1) catch continue;
+        } else {
+            lcd.printAt("Tare scale!", 0, 0) catch continue;
+        }
 
-export fn blinkTask(_: ?*anyopaque) callconv(.c) void {
-    blinkLED(1000) catch |err| @panic(@errorName(err));
-}
+        // Logging (TODO REMOVE)
+        const stones = stonesFromAdc(zeroed);
+        std.log.info("raw={d} avg={d} zeroed={d} stones={d:.2}", .{ raw, avg, zeroed, stones });
 
-export fn fooTask(_: ?*anyopaque) callconv(.c) void {
-    while (true) {
-        log.info("Demo_Task foo printing..", .{});
-        idf.rtos.Task.delayMs(2000);
-    }
-}
+        // Button Handling
+        var selected_dirt: ?Dirtiness = null;
 
-export fn barTask(_: ?*anyopaque) callconv(.c) void {
-    while (true) {
-        log.info("Demo_Task bar printing..", .{});
-        idf.rtos.Task.delayMs(1000);
+        if (white_tare.read()) {
+            tare_offset = avg;
+            tared = true;
+        } else if (tared) {
+            if (red.read()) {
+                selected_dirt = .normal;
+            } else if (blue.read()) {
+                selected_dirt = .dirty;
+            } else if (yellow.read()) {
+                selected_dirt = .nasty;
+            }
+        }
+
+        // Dispense Logic, configured in active low
+        if (selected_dirt) |dirt| {
+            lcd.clear();
+            tared = false;
+
+            const msg = switch (dirt) {
+                .normal => "Normal load!",
+                .dirty => "Dirty load!",
+                .nasty => "Nasty load!",
+            };
+            lcd.printAt(msg, 0, 0) catch continue;
+            lcd.printAt("Dispensing!", 0, 1) catch continue;
+
+            const time_ms = getDispenseTimeMs(stones, dirt);
+            pump.write(0);
+            sleepMs(time_ms);
+            pump.write(4095);
+        }
+
+        // TODO: Maybe change delay for better average and refresh of LCD
+        sleepMs(25);
     }
 }
 
@@ -119,3 +185,7 @@ pub const std_options: std.Options = .{
     },
     .logFn = idf.log.espLogFn,
 };
+
+fn sleepMs(time_ms: idf.sys.TickType_t) void {
+    idf.sys.vTaskDelay(@divTrunc(time_ms, idf.sys.portTICK_PERIOD_MS));
+}

@@ -7,14 +7,17 @@ pub fn build(b: *std.Build) !void {
     });
     const optimize = b.standardOptimizeOption(.{});
 
+    const mod = b.createModule(.{
+        .root_source_file = b.path("main/app.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+    try resolveIncludes(b, mod);
+
     const obj = b.addObject(.{
         .name = "app_zig",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("main/app.zig"),
-            .target = target,
-            .optimize = optimize,
-            .link_libc = true,
-        }),
+        .root_module = mod,
     });
     obj.root_module.addImport("esp_idf", idf_wrapped_modules(b));
 
@@ -26,6 +29,27 @@ pub fn build(b: *std.Build) !void {
         },
     });
     b.getInstallStep().dependOn(&obj_install.step);
+}
+
+fn resolveIncludes(b: *std.Build, mod: *std.Build.Module) !void {
+    const contents = try b.build_root.handle.readFileAlloc(
+        b.graph.io,
+        "build/include_dirs.txt",
+        b.allocator,
+        .unlimited,
+    );
+
+    var seen_set: std.StringHashMap(void) = .init(b.allocator);
+    var it = std.mem.tokenizeScalar(u8, contents, ';');
+
+    while (it.next()) |inc_path| {
+        const trimmed = std.mem.trim(u8, inc_path, " \n\r\t");
+        if (trimmed.len > 0 and !seen_set.contains(trimmed)) {
+            try seen_set.put(trimmed, {});
+            mod.addSystemIncludePath(.{ .cwd_relative = trimmed });
+        }
+    }
+    mod.addSystemIncludePath(b.path("include"));
 }
 
 // ---------------------------------------------------------------------------
