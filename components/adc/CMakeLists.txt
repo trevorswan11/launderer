@@ -1,8 +1,7 @@
-set(DEPS driver hd44780 pcf8574)
+set(DEPS esp_adc driver)
 
 idf_component_register(
-    SRCS "lcd.cpp"
+    SRCS "adc.cpp"
     INCLUDE_DIRS "include"
-    REQUIRES i2cdev
     PRIV_REQUIRES "${DEPS}"
 )

@@ -1,6 +1,7 @@
 .zig-cache/
 zig-out/
 *.o
+*zig-*/
 
 .zed
 .DS_Store
@@ -11,3 +12,5 @@ build
 
 managed_components/
 sdkconfig
+imports/idf-sys.zig
+include/bindings.h
