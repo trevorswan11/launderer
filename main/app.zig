@@ -8,6 +8,7 @@ const Lcd = @import("peripherals/Lcd.zig");
 const PwmOut = @import("peripherals/PwmOut.zig");
 const layout = @import("peripherals/pin_layout.zig");
 
+/// Provided by libc, use this over `std.fmt` or `std.log`
 extern fn printf(noalias [*c]const u8, ...) c_int;
 
 comptime {
@@ -22,7 +23,7 @@ const Dirtiness = enum {
 
 // Global state
 const history_size: usize = 20;
-var history = [_]i32{0} ** history_size;
+var history: [history_size]i32 = @splat(0);
 var history_index: usize = 0;
 var history_full = false;
 var tare_offset: i32 = 0;
@@ -33,6 +34,7 @@ const fit_A: f32 = -478286.117341;
 const fit_B: f32 = 830.395033677;
 const fit_C: f32 = 580.401879334;
 
+/// Calculates the number of go stones based on an experimental curve
 fn stonesFromAdc(zeroed: i32) f32 {
     if (zeroed <= 0) return 0.0;
     const f_zeroed: f32 = @floatFromInt(zeroed);
@@ -57,6 +59,7 @@ const medium_upper_bound = medium_cutoff + cutoff_buffer;
 // Any number of go stones below this should not pump
 const minimum_stone_cutoff: f32 = 10.0;
 
+// TODO(trevor): Use a linear scale instead of buckets
 fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness) idf.sys.TickType_t {
     if (go_stones < minimum_stone_cutoff) return 0;
 
@@ -96,9 +99,9 @@ fn main() callconv(.c) void {
 
     // Buttons
     const white_tare = DigitalPinIn.init(layout.D15, .pulldown_only) catch @panic("Failed to create tare");
-    const red = DigitalPinIn.init(layout.D33, .pulldown_only) catch @panic("Failed to create red");
-    const blue = DigitalPinIn.init(layout.D14, .pulldown_only) catch @panic("Failed to create blue");
-    const yellow = DigitalPinIn.init(layout.D32, .pulldown_only) catch @panic("Failed to create yellow");
+    const normal_button = DigitalPinIn.init(layout.D33, .pulldown_only) catch @panic("Failed to create red");
+    const dirty_button = DigitalPinIn.init(layout.D14, .pulldown_only) catch @panic("Failed to create blue");
+    const nasty_button = DigitalPinIn.init(layout.D32, .pulldown_only) catch @panic("Failed to create yellow");
     const white_reset = DigitalPinIn.init(layout.D27, .pulldown_only) catch @panic("Failed to create reset");
 
     // PP
@@ -160,11 +163,11 @@ fn main() callconv(.c) void {
             tare_offset = avg;
             tared = true;
         } else if (tared) {
-            if (red.read()) {
+            if (normal_button.read()) {
                 selected_dirt = .normal;
-            } else if (blue.read()) {
+            } else if (dirty_button.read()) {
                 selected_dirt = .dirty;
-            } else if (yellow.read()) {
+            } else if (nasty_button.read()) {
                 selected_dirt = .nasty;
             }
         }
