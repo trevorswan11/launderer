@@ -51,15 +51,15 @@ const small_scalar: f32 = 1.0 / 3.0;
 const large_scalar: f32 = 1.667;
 
 // The number of go stones to be considered a medium load
-const medium_cutoff: f32 = 130.0;
-const cutoff_buffer: f32 = 15.0;
-const medium_lower_bound = medium_cutoff - cutoff_buffer;
-const medium_upper_bound = medium_cutoff + cutoff_buffer;
+const medium_cutoff: f32 = 272.0;
+const cutoff_buffer: f32 = 15.0; // Currently unused
+const medium_lower_bound: f32 = 160.0;
+const medium_upper_bound: f32 = 420.0;
 
 // Any number of go stones below this should not pump
 const minimum_stone_cutoff: f32 = 10.0;
 
-// TODO(trevor): Use a linear scale instead of buckets
+// TODO(trevor): Examine linear scale versus of buckets
 fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness) idf.sys.TickType_t {
     if (go_stones < minimum_stone_cutoff) return 0;
 
@@ -108,6 +108,9 @@ fn main() callconv(.c) void {
     const pump = PwmOut.init(.A0) catch @panic("Failed to create pump");
     var pressure_sensor = AnalogIn.init(.A1) catch @panic("Failed to create pressure sensor");
 
+    // CSV header
+    _ = printf("raw(ADC), avg(ADC), zeroed(ADC), stones(#), time(ms)\n");
+    
     // Main loop
     while (true) {
         // Reading & History
@@ -154,7 +157,7 @@ fn main() callconv(.c) void {
 
         // Logging (TODO REMOVE)
         const stones = stonesFromAdc(zeroed);
-        _ = printf("raw=%d avg=%d zeroed=%d stones=%f\n", raw, avg, zeroed, stones);
+        _ = printf("%d, %d, %d, %f, ", raw, avg, zeroed, stones);
 
         // Button Handling
         var selected_dirt: ?Dirtiness = null;
@@ -186,9 +189,12 @@ fn main() callconv(.c) void {
             lcd.printAt("Dispensing!", 0, 1) catch continue;
 
             const time_ms = getDispenseTimeMs(stones, dirt);
+            _ = printf("%d\n", time_ms);
             pump.write(0) catch continue;
             idf.sleepMs(time_ms);
             pump.write(4095) catch continue;
+        } else {
+            _ = printf("-\n");
         }
 
         idf.sleepMs(50);
