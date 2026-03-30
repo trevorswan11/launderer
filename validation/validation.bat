@@ -8,5 +8,5 @@ echo Starting ESP-IDF Monitor...
 echo Logging to: %FILENAME%
 echo Press Ctrl+C to stop.
 
-idf.py monitor 1>> %FILENAME% 2>nul
+idf.py monitor 1> %FILENAME% 2>nul
 pause
