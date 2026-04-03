@@ -24,11 +24,33 @@ const Dirtiness = enum {
 
 // Global state
 const history_size: usize = 20;
-var history: [history_size]i32 = @splat(0);
-var history_index: usize = 0;
-var history_full = false;
-var tare_offset: i32 = 0;
-var tared = false;
+const History = struct {
+    buffer: [history_size]i32 = @splat(0),
+    index: usize = 0,
+    full: bool = false,
+
+    pub fn storeRead(self: *History, read: i32) void {
+        self.buffer[self.index] = read;
+        self.index = (self.index + 1) % history_size;
+        if (self.index == 0) self.full = true;
+    }
+
+    pub fn reset(self: *History) void {
+        self.index = 0;
+        self.full = false;
+        @memset(&self.buffer, 0);
+    }
+
+    pub fn average(self: History) i32 {
+        const count: usize = if (self.full) history_size else self.index;
+        var sum: i32 = 0;
+        for (self.buffer[0..count]) |val| {
+            sum += val;
+        }
+        const avg: i32 = if (count > 0) @divTrunc(sum, @as(i32, @intCast(count))) else 0;
+        return avg;
+    }
+};
 
 // From desmos fit
 const fit_A: f32 = -478286.117341;
@@ -86,14 +108,22 @@ const LastLcdWrite = enum {
     select,
 };
 
-var last_lcd_write: LastLcdWrite = .initial;
-
 fn main() callconv(.c) void {
     var heap = idf.heap.HeapCapsAllocator.init(.{ .@"8bit" = true });
     var arena = std.heap.ArenaAllocator.init(heap.allocator());
     defer arena.deinit();
     const allocator = arena.allocator();
+    
+    // Buffers and state
+    var pressure_history: History = .{};
+    var load_history: History = .{};
+    
+    var pressure_tare_offset: i32 = 0;
+    var load_tare_offset: i32 = 0;
+    var tared = false;
 
+    var last_lcd_write: LastLcdWrite = .initial;
+    
     // LCD initialization
     var lcd = Lcd.init(allocator, 0x27, .SDA, .SCL) catch @panic("Failed to create LCD");
     lcd.begin() catch @panic("Failed to begin LCD");
@@ -111,35 +141,36 @@ fn main() callconv(.c) void {
 
     // Load Cell
     var load_cell = LoadCell.init(layout.MOSI, layout.SCK) catch @panic("Failed to create load_cell");
-    _ = &load_cell;
 
     // CSV header
-    _ = printf("raw(ADC), avg(ADC), zeroed(ADC), stones(#), time(ms)\n");
+    _ = printf("raw_press(ADC), avg_press(ADC), zeroed_press(ADC), stones_press(#), ");
+    _ = printf("raw_load(ADC), avg_load(ADC), zeroed_load(ADC), stones_load(#), ");
+    _ = printf("time(ms)\n");
 
     // Main loop
     while (true) {
         // Reading & History
-        const raw = pressure_sensor.read() catch continue;
-        history[history_index] = raw;
-        history_index = (history_index + 1) % history_size;
-        if (history_index == 0) history_full = true;
+        const raw_pressure = pressure_sensor.read() catch continue;
+        pressure_history.storeRead(raw_pressure);
+
+        const raw_load = load_cell.readData() catch continue;
+        load_history.storeRead(raw_load);
 
         // Average Logic
-        const count: usize = if (history_full) history_size else history_index;
-        var sum: i32 = 0;
-        for (history[0..count]) |val| {
-            sum += val;
-        }
-        const avg: i32 = if (count > 0) @divTrunc(sum, @as(i32, @intCast(count))) else 0;
-        const zeroed = avg - tare_offset;
+        const pressure_avg = pressure_history.average();
+        const pressure_zeroed = pressure_avg - pressure_tare_offset;
+
+        const load_avg = load_history.average();
+        const load_zeroed = load_avg - load_tare_offset;
 
         // Reset Logic
         if (white_reset.read()) {
             tared = false;
-            tare_offset = 0;
-            history_index = 0;
-            history_full = false;
-            @memset(&history, 0);
+            pressure_tare_offset = 0;
+            load_tare_offset = 0;
+
+            pressure_history.reset();
+            load_history.reset();
         }
 
         // UI Update
@@ -161,14 +192,17 @@ fn main() callconv(.c) void {
         }
 
         // Logging (TODO REMOVE)
-        const stones = stonesFromAdc(zeroed);
-        _ = printf("%d, %d, %d, %f, ", raw, avg, zeroed, stones);
+        const pressure_stones = stonesFromAdc(pressure_zeroed);
+        _ = printf("%d, %d, %d, %f, ", raw_pressure, pressure_avg, pressure_zeroed, pressure_stones);
+        const load_stones = stonesFromAdc(load_zeroed);
+        _ = printf("%d, %d, %d, %f, ", raw_load, load_avg, load_zeroed, load_stones);
 
         // Button Handling
         var selected_dirt: ?Dirtiness = null;
 
         if (white_tare.read()) {
-            tare_offset = avg;
+            pressure_tare_offset = pressure_avg;
+            load_tare_offset = load_avg;
             tared = true;
         } else if (tared) {
             if (normal_button.read()) {
@@ -193,7 +227,7 @@ fn main() callconv(.c) void {
             lcd.printAt(msg, 0, 0) catch continue;
             lcd.printAt("Dispensing!", 0, 1) catch continue;
 
-            const time_ms = getDispenseTimeMs(stones, dirt);
+            const time_ms = getDispenseTimeMs(pressure_stones, dirt);
             _ = printf("%d\n", time_ms);
             pump.write(0) catch continue;
             idf.sleepMs(time_ms);
