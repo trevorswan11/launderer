@@ -5,8 +5,9 @@ const idf = @import("esp_idf");
 const AnalogIn = @import("peripherals/AnalogIn.zig");
 const DigitalPinIn = @import("peripherals/DigitalPinIn.zig");
 const Lcd = @import("peripherals/Lcd.zig");
-const PwmOut = @import("peripherals/PwmOut.zig");
+const LoadCell = @import("peripherals/LoadCell.zig");
 const layout = @import("peripherals/pin_layout.zig");
+const PwmOut = @import("peripherals/PwmOut.zig");
 
 /// Provided by libc, use this over `std.fmt` or `std.log`
 extern fn printf(noalias [*c]const u8, ...) c_int;
@@ -108,9 +109,13 @@ fn main() callconv(.c) void {
     const pump = PwmOut.init(.A0) catch @panic("Failed to create pump");
     var pressure_sensor = AnalogIn.init(.A1) catch @panic("Failed to create pressure sensor");
 
+    // Load Cell
+    var load_cell = LoadCell.init(layout.MOSI, layout.SCK) catch @panic("Failed to create load_cell");
+    _ = &load_cell;
+
     // CSV header
     _ = printf("raw(ADC), avg(ADC), zeroed(ADC), stones(#), time(ms)\n");
-    
+
     // Main loop
     while (true) {
         // Reading & History

@@ -1,4 +1,4 @@
-set(DEPS nvs_flash esp_adc driver hd44780 pcf8574 lcd adc)
+set(DEPS nvs_flash esp_adc driver hd44780 pcf8574 lcd adc load_cell)
 set(MAIN_SRCS "../cmake/placeholder.c")
 
 idf_component_register(
