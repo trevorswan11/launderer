@@ -272,6 +272,7 @@ pub const std_options: std.Options = .{
     .logFn = idf.log.espLogFn,
 };
 
+// The lion does not concern himself with this
 export fn __udivti3() void {
     @panic("__udivti3: what are you doing here?");
 }
