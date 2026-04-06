@@ -10,6 +10,17 @@ const c = @cImport({
 const Self = @This();
 const FeatherV2Pin = layout.FeatherV2Pin;
 
+pub const Gain = enum(c_uint) {
+    chan_a_128 = 0,
+    chan_b_32 = 1,
+    chan_a_64 = 2,
+};
+
+pub const Power = enum(c_uint) {
+    on,
+    off,
+};
+
 const check = idf.err.espCheckError;
 
 load_cell: c.load_cell_t,
@@ -27,12 +38,12 @@ pub fn deinit(self: *Self) void {
     c.load_cell_destroy(&self.lcd);
 }
 
-pub fn setPower(self: *Self, power: c.load_cell_power_t) !void {
-    try check(c.load_cell_set_power(&self.load_cell, power));
+pub fn setPower(self: *Self, power: Power) !void {
+    try check(c.load_cell_set_power(&self.load_cell, @intFromEnum(power)));
 }
 
-pub fn setGain(self: *Self, gain: c.load_cell_gain_t) !void {
-    try check(c.load_cell_set_gain(&self.load_cell, gain));
+pub fn setGain(self: *Self, gain: Gain) !void {
+    try check(c.load_cell_set_gain(&self.load_cell, @intFromEnum(gain)));
 }
 
 pub fn isReady(self: *Self) !bool {

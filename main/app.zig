@@ -82,6 +82,8 @@ const medium_upper_bound: f32 = 420.0;
 // Any number of go stones below this should not pump
 const minimum_stone_cutoff: f32 = 10.0;
 
+const pump_active_low = true;
+
 // TODO(trevor): Examine linear scale versus of buckets
 fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness) idf.sys.TickType_t {
     if (go_stones < minimum_stone_cutoff) return 0;
@@ -113,17 +115,17 @@ fn main() callconv(.c) void {
     var arena = std.heap.ArenaAllocator.init(heap.allocator());
     defer arena.deinit();
     const allocator = arena.allocator();
-    
+
     // Buffers and state
     var pressure_history: History = .{};
     var load_history: History = .{};
-    
+
     var pressure_tare_offset: i32 = 0;
     var load_tare_offset: i32 = 0;
     var tared = false;
 
     var last_lcd_write: LastLcdWrite = .initial;
-    
+
     // LCD initialization
     var lcd = Lcd.init(allocator, 0x27, .SDA, .SCL) catch @panic("Failed to create LCD");
     lcd.begin() catch @panic("Failed to begin LCD");
@@ -141,13 +143,12 @@ fn main() callconv(.c) void {
 
     // Load Cell
     var load_cell = LoadCell.init(layout.MOSI, layout.SCK) catch @panic("Failed to create load_cell");
+    load_cell.setGain(.chan_a_128) catch @panic("Failed to set load cell gain");
 
     // CSV header
     _ = printf("raw_press(ADC), avg_press(ADC), zeroed_press(ADC), stones_press(#), ");
     _ = printf("raw_load(ADC), avg_load(ADC), zeroed_load(ADC), stones_load(#), ");
     _ = printf("time(ms)\n");
-    
-    load_cell.setGain(0) catch {};
 
     // Main loop
     while (true) {
@@ -176,7 +177,11 @@ fn main() callconv(.c) void {
         }
 
         // UI Update
-        pump.write(4095) catch continue;
+        if (comptime pump_active_low) {
+            pump.write(4095) catch continue;
+        } else {
+            pump.write(0) catch continue;
+        }
 
         if (tared) {
             if (last_lcd_write != .select) {
@@ -200,7 +205,6 @@ fn main() callconv(.c) void {
         // _ = printf("%d, %d, %d, %f, ", raw_load, load_avg, load_zeroed, load_stones);
         _ = load_stones;
         _ = printf("%d\n", raw_load);
-        idf.sleepMs(100);
 
         // Button Handling
         var selected_dirt: ?Dirtiness = null;
@@ -219,7 +223,7 @@ fn main() callconv(.c) void {
             }
         }
 
-        // Dispense Logic, configured in active low
+        // Dispense Logic
         if (selected_dirt) |dirt| {
             lcd.clear() catch continue;
             tared = false;
@@ -234,14 +238,27 @@ fn main() callconv(.c) void {
 
             const time_ms = getDispenseTimeMs(pressure_stones, dirt);
             // _ = printf("%d\n", time_ms);
-            pump.write(0) catch continue;
+
+            // Turn on the pump and pump for the calculated duration
+            if (comptime pump_active_low) {
+                pump.write(0) catch continue;
+            } else {
+                pump.write(4095) catch continue;
+            }
             idf.sleepMs(time_ms);
-            pump.write(4095) catch continue;
+
+            // Turn the pump back off
+            if (comptime pump_active_low) {
+                pump.write(4095) catch continue;
+            } else {
+                pump.write(0) catch continue;
+            }
         } else {
             // _ = printf("-\n");
         }
 
-        idf.sleepMs(50);
+        // Using the load cell requires a longer delay otherwise it reads -1
+        idf.sleepMs(150);
     }
 }
 
