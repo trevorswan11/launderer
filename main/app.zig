@@ -5,7 +5,6 @@ const idf = @import("esp_idf");
 const AnalogIn = @import("peripherals/AnalogIn.zig");
 const DigitalPinIn = @import("peripherals/DigitalPinIn.zig");
 const Lcd = @import("peripherals/Lcd.zig");
-const LoadCell = @import("peripherals/LoadCell.zig");
 const layout = @import("peripherals/pin_layout.zig");
 const PwmOut = @import("peripherals/PwmOut.zig");
 
@@ -82,25 +81,37 @@ const medium_upper_bound: f32 = 420.0;
 // Any number of go stones below this should not pump
 const minimum_stone_cutoff: f32 = 10.0;
 
-const pump_active_low = true;
+const pump_active_low = false;
 
 // TODO(trevor): Examine linear scale versus of buckets
-fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness) idf.sys.TickType_t {
+fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness, comptime mode: enum { equation, buckets }) idf.sys.TickType_t {
     if (go_stones < minimum_stone_cutoff) return 0;
 
-    const scalar: f32 = if (go_stones > medium_upper_bound)
-        large_scalar
-    else if (go_stones < medium_lower_bound)
-        small_scalar
-    else
-        1.0;
+    var duration_s: f32 = undefined;
+    switch (mode) {
+        .buckets => {
+            const scalar: f32 = if (go_stones > medium_upper_bound)
+                large_scalar
+            else if (go_stones < medium_lower_bound)
+                small_scalar
+            else
+                1.0;
 
-    const duration_s = switch (dirt) {
-        .normal => medium_normal * scalar,
-        .dirty => medium_dirty * scalar,
-        .nasty => medium_nasty * scalar,
-    };
-
+            duration_s = switch (dirt) {
+                .normal => medium_normal * scalar,
+                .dirty => medium_dirty * scalar,
+                .nasty => medium_nasty * scalar,
+            };
+        },
+        .equation => {
+            // Determined from experimental data
+            duration_s = switch (dirt) {
+                .normal => 0.0017 * go_stones + 0.0398,
+                .dirty => 0.0034 * go_stones + 0.0795,
+                .nasty => 0.0051 * go_stones + 0.1193,
+            };
+        },
+    }
     return prime_time_ms + @as(idf.sys.TickType_t, @intFromFloat(duration_s * 1000.0));
 }
 
@@ -118,10 +129,7 @@ fn main() callconv(.c) void {
 
     // Buffers and state
     var pressure_history: History = .{};
-    var load_history: History = .{};
-
     var pressure_tare_offset: i32 = 0;
-    var load_tare_offset: i32 = 0;
     var tared = false;
 
     var last_lcd_write: LastLcdWrite = .initial;
@@ -141,14 +149,8 @@ fn main() callconv(.c) void {
     const pump = PwmOut.init(.A0) catch @panic("Failed to create pump");
     var pressure_sensor = AnalogIn.init(.A1) catch @panic("Failed to create pressure sensor");
 
-    // Load Cell
-    var load_cell = LoadCell.init(layout.MOSI, layout.SCK) catch @panic("Failed to create load_cell");
-    load_cell.setGain(.chan_a_128) catch @panic("Failed to set load cell gain");
-
     // CSV header
-    _ = printf("raw_press(ADC), avg_press(ADC), zeroed_press(ADC), stones_press(#), ");
-    _ = printf("raw_load(ADC), avg_load(ADC), zeroed_load(ADC), stones_load(#), ");
-    _ = printf("time(ms)\n");
+    _ = printf("raw_press(ADC), avg_press(ADC), zeroed_press(ADC), stones_press(#), time(ms)\n");
 
     // Main loop
     while (true) {
@@ -156,24 +158,15 @@ fn main() callconv(.c) void {
         const raw_pressure = pressure_sensor.read() catch continue;
         pressure_history.storeRead(raw_pressure);
 
-        const raw_load = load_cell.readData() catch continue;
-        load_history.storeRead(raw_load);
-
         // Average Logic
         const pressure_avg = pressure_history.average();
         const pressure_zeroed = pressure_avg - pressure_tare_offset;
-
-        const load_avg = load_history.average();
-        const load_zeroed = load_avg - load_tare_offset;
 
         // Reset Logic
         if (white_reset.read()) {
             tared = false;
             pressure_tare_offset = 0;
-            load_tare_offset = 0;
-
             pressure_history.reset();
-            load_history.reset();
         }
 
         // UI Update
@@ -200,18 +193,13 @@ fn main() callconv(.c) void {
 
         // Logging (TODO REMOVE)
         const pressure_stones = stonesFromAdc(pressure_zeroed);
-        // _ = printf("%d, %d, %d, %f, ", raw_pressure, pressure_avg, pressure_zeroed, pressure_stones);
-        const load_stones = stonesFromAdc(load_zeroed);
-        // _ = printf("%d, %d, %d, %f, ", raw_load, load_avg, load_zeroed, load_stones);
-        _ = load_stones;
-        _ = printf("%d\n", raw_load);
+        _ = printf("%d, %d, %d, %f, ", raw_pressure, pressure_avg, pressure_zeroed, pressure_stones);
 
         // Button Handling
         var selected_dirt: ?Dirtiness = null;
 
         if (white_tare.read()) {
             pressure_tare_offset = pressure_avg;
-            load_tare_offset = load_avg;
             tared = true;
         } else if (tared) {
             if (normal_button.read()) {
@@ -236,8 +224,8 @@ fn main() callconv(.c) void {
             lcd.printAt(msg, 0, 0) catch continue;
             lcd.printAt("Dispensing!", 0, 1) catch continue;
 
-            const time_ms = getDispenseTimeMs(pressure_stones, dirt);
-            // _ = printf("%d\n", time_ms);
+            const time_ms = getDispenseTimeMs(pressure_stones, dirt, .equation);
+            _ = printf("%d\n", time_ms);
 
             // Turn on the pump and pump for the calculated duration
             if (comptime pump_active_low) {
@@ -254,11 +242,10 @@ fn main() callconv(.c) void {
                 pump.write(0) catch continue;
             }
         } else {
-            // _ = printf("-\n");
+            _ = printf("-\n");
         }
 
-        // Using the load cell requires a longer delay otherwise it reads -1
-        idf.sleepMs(150);
+        idf.sleepMs(50);
     }
 }
 
