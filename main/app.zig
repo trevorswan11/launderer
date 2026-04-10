@@ -106,9 +106,9 @@ fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness, comptime mode: enum { equa
         .equation => {
             // Determined from experimental data
             duration_s = switch (dirt) {
-                .normal => 0.0017 * go_stones + 0.0398,
-                .dirty => 0.0034 * go_stones + 0.0795,
-                .nasty => 0.0051 * go_stones + 0.1193,
+                .normal => 0.0029 * go_stones + 0.372,
+                .dirty => 0.0045 * go_stones + 0.1799,
+                .nasty => 0.0058 * go_stones + 0.0783,
             };
         },
     }
@@ -259,7 +259,7 @@ pub const std_options: std.Options = .{
     .logFn = idf.log.espLogFn,
 };
 
-// The lion does not concern himself with this
+/// The lion does not concern himself with this
 export fn __udivti3() void {
     @panic("__udivti3: what are you doing here?");
 }
