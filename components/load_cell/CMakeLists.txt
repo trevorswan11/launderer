@@ -1,8 +1,7 @@
-set(DEPS driver hd44780 pcf8574)
+set(DEPS driver hx711)
 
 idf_component_register(
-    SRCS "lcd.cpp"
+    SRCS "load_cell.cpp"
     INCLUDE_DIRS "."
-    REQUIRES i2cdev
     PRIV_REQUIRES "${DEPS}"
 )

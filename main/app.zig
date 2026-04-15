@@ -5,9 +5,10 @@ const idf = @import("esp_idf");
 const AnalogIn = @import("peripherals/AnalogIn.zig");
 const DigitalPinIn = @import("peripherals/DigitalPinIn.zig");
 const Lcd = @import("peripherals/Lcd.zig");
-const PwmOut = @import("peripherals/PwmOut.zig");
 const layout = @import("peripherals/pin_layout.zig");
+const PwmOut = @import("peripherals/PwmOut.zig");
 
+/// Provided by libc, use this over `std.fmt` or `std.log`
 extern fn printf(noalias [*c]const u8, ...) c_int;
 
 comptime {
@@ -22,17 +23,40 @@ const Dirtiness = enum {
 
 // Global state
 const history_size: usize = 20;
-var history = [_]i32{0} ** history_size;
-var history_index: usize = 0;
-var history_full = false;
-var tare_offset: i32 = 0;
-var tared = false;
+const History = struct {
+    buffer: [history_size]i32 = @splat(0),
+    index: usize = 0,
+    full: bool = false,
+
+    pub fn storeRead(self: *History, read: i32) void {
+        self.buffer[self.index] = read;
+        self.index = (self.index + 1) % history_size;
+        if (self.index == 0) self.full = true;
+    }
+
+    pub fn reset(self: *History) void {
+        self.index = 0;
+        self.full = false;
+        @memset(&self.buffer, 0);
+    }
+
+    pub fn average(self: History) i32 {
+        const count: usize = if (self.full) history_size else self.index;
+        var sum: i32 = 0;
+        for (self.buffer[0..count]) |val| {
+            sum += val;
+        }
+        const avg: i32 = if (count > 0) @divTrunc(sum, @as(i32, @intCast(count))) else 0;
+        return avg;
+    }
+};
 
 // From desmos fit
 const fit_A: f32 = -478286.117341;
 const fit_B: f32 = 830.395033677;
 const fit_C: f32 = 580.401879334;
 
+/// Calculates the number of go stones based on an experimental curve
 fn stonesFromAdc(zeroed: i32) f32 {
     if (zeroed <= 0) return 0.0;
     const f_zeroed: f32 = @floatFromInt(zeroed);
@@ -49,30 +73,44 @@ const small_scalar: f32 = 1.0 / 3.0;
 const large_scalar: f32 = 1.667;
 
 // The number of go stones to be considered a medium load
-const medium_cutoff: f32 = 130.0;
-const cutoff_buffer: f32 = 15.0;
-const medium_lower_bound = medium_cutoff - cutoff_buffer;
-const medium_upper_bound = medium_cutoff + cutoff_buffer;
+const medium_cutoff: f32 = 272.0; // Currently unused
+const cutoff_buffer: f32 = 15.0; // Currently unused
+const medium_lower_bound: f32 = 160.0;
+const medium_upper_bound: f32 = 420.0;
 
 // Any number of go stones below this should not pump
 const minimum_stone_cutoff: f32 = 10.0;
 
-fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness) idf.sys.TickType_t {
+const pump_active_low = false;
+
+fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness, comptime mode: enum { equation, buckets }) idf.sys.TickType_t {
     if (go_stones < minimum_stone_cutoff) return 0;
 
-    const scalar: f32 = if (go_stones > medium_upper_bound)
-        large_scalar
-    else if (go_stones < medium_lower_bound)
-        small_scalar
-    else
-        1.0;
+    var duration_s: f32 = undefined;
+    switch (mode) {
+        .buckets => {
+            const scalar: f32 = if (go_stones > medium_upper_bound)
+                large_scalar
+            else if (go_stones < medium_lower_bound)
+                small_scalar
+            else
+                1.0;
 
-    const duration_s = switch (dirt) {
-        .normal => medium_normal * scalar,
-        .dirty => medium_dirty * scalar,
-        .nasty => medium_nasty * scalar,
-    };
-
+            duration_s = switch (dirt) {
+                .normal => medium_normal * scalar,
+                .dirty => medium_dirty * scalar,
+                .nasty => medium_nasty * scalar,
+            };
+        },
+        .equation => {
+            // Determined from experimental data
+            duration_s = switch (dirt) {
+                .normal => 0.0029 * go_stones + 0.372,
+                .dirty => 0.0045 * go_stones + 0.1799,
+                .nasty => 0.0058 * go_stones + 0.0783,
+            };
+        },
+    }
     return prime_time_ms + @as(idf.sys.TickType_t, @intFromFloat(duration_s * 1000.0));
 }
 
@@ -82,13 +120,18 @@ const LastLcdWrite = enum {
     select,
 };
 
-var last_lcd_write: LastLcdWrite = .initial;
-
 fn main() callconv(.c) void {
     var heap = idf.heap.HeapCapsAllocator.init(.{ .@"8bit" = true });
     var arena = std.heap.ArenaAllocator.init(heap.allocator());
     defer arena.deinit();
     const allocator = arena.allocator();
+
+    // Buffers and state
+    var pressure_history: History = .{};
+    var pressure_tare_offset: i32 = 0;
+    var tared = false;
+
+    var last_lcd_write: LastLcdWrite = .initial;
 
     // LCD initialization
     var lcd = Lcd.init(allocator, 0x27, .SDA, .SCL) catch @panic("Failed to create LCD");
@@ -96,43 +139,41 @@ fn main() callconv(.c) void {
 
     // Buttons
     const white_tare = DigitalPinIn.init(layout.D15, .pulldown_only) catch @panic("Failed to create tare");
-    const red = DigitalPinIn.init(layout.D33, .pulldown_only) catch @panic("Failed to create red");
-    const blue = DigitalPinIn.init(layout.D14, .pulldown_only) catch @panic("Failed to create blue");
-    const yellow = DigitalPinIn.init(layout.D32, .pulldown_only) catch @panic("Failed to create yellow");
+    const normal_button = DigitalPinIn.init(layout.D33, .pulldown_only) catch @panic("Failed to create red");
+    const dirty_button = DigitalPinIn.init(layout.D14, .pulldown_only) catch @panic("Failed to create blue");
+    const nasty_button = DigitalPinIn.init(layout.D32, .pulldown_only) catch @panic("Failed to create yellow");
     const white_reset = DigitalPinIn.init(layout.D27, .pulldown_only) catch @panic("Failed to create reset");
 
     // PP
     const pump = PwmOut.init(.A0) catch @panic("Failed to create pump");
     var pressure_sensor = AnalogIn.init(.A1) catch @panic("Failed to create pressure sensor");
 
+    // CSV header
+    _ = printf("raw_press(ADC), avg_press(ADC), zeroed_press(ADC), stones_press(#), time(ms)\n");
+
     // Main loop
     while (true) {
         // Reading & History
-        const raw = pressure_sensor.read() catch continue;
-        history[history_index] = raw;
-        history_index = (history_index + 1) % history_size;
-        if (history_index == 0) history_full = true;
+        const raw_pressure = pressure_sensor.read() catch continue;
+        pressure_history.storeRead(raw_pressure);
 
         // Average Logic
-        const count: usize = if (history_full) history_size else history_index;
-        var sum: i32 = 0;
-        for (history[0..count]) |val| {
-            sum += val;
-        }
-        const avg: i32 = if (count > 0) @divTrunc(sum, @as(i32, @intCast(count))) else 0;
-        const zeroed = avg - tare_offset;
+        const pressure_avg = pressure_history.average();
+        const pressure_zeroed = pressure_avg - pressure_tare_offset;
 
         // Reset Logic
         if (white_reset.read()) {
             tared = false;
-            tare_offset = 0;
-            history_index = 0;
-            history_full = false;
-            @memset(&history, 0);
+            pressure_tare_offset = 0;
+            pressure_history.reset();
         }
 
         // UI Update
-        pump.write(4095) catch continue;
+        if (comptime pump_active_low) {
+            pump.write(4095) catch continue;
+        } else {
+            pump.write(0) catch continue;
+        }
 
         if (tared) {
             if (last_lcd_write != .select) {
@@ -150,26 +191,26 @@ fn main() callconv(.c) void {
         }
 
         // Logging (TODO REMOVE)
-        const stones = stonesFromAdc(zeroed);
-        _ = printf("raw=%d avg=%d zeroed=%d stones=%f\n", raw, avg, zeroed, stones);
+        const pressure_stones = stonesFromAdc(pressure_zeroed);
+        _ = printf("%d, %d, %d, %f, ", raw_pressure, pressure_avg, pressure_zeroed, pressure_stones);
 
         // Button Handling
         var selected_dirt: ?Dirtiness = null;
 
         if (white_tare.read()) {
-            tare_offset = avg;
+            pressure_tare_offset = pressure_avg;
             tared = true;
         } else if (tared) {
-            if (red.read()) {
+            if (normal_button.read()) {
                 selected_dirt = .normal;
-            } else if (blue.read()) {
+            } else if (dirty_button.read()) {
                 selected_dirt = .dirty;
-            } else if (yellow.read()) {
+            } else if (nasty_button.read()) {
                 selected_dirt = .nasty;
             }
         }
 
-        // Dispense Logic, configured in active low
+        // Dispense Logic
         if (selected_dirt) |dirt| {
             lcd.clear() catch continue;
             tared = false;
@@ -182,10 +223,25 @@ fn main() callconv(.c) void {
             lcd.printAt(msg, 0, 0) catch continue;
             lcd.printAt("Dispensing!", 0, 1) catch continue;
 
-            const time_ms = getDispenseTimeMs(stones, dirt);
-            pump.write(0) catch continue;
+            const time_ms = getDispenseTimeMs(pressure_stones, dirt, .equation);
+            _ = printf("%d\n", time_ms);
+
+            // Turn on the pump and pump for the calculated duration
+            if (comptime pump_active_low) {
+                pump.write(0) catch continue;
+            } else {
+                pump.write(4095) catch continue;
+            }
             idf.sleepMs(time_ms);
-            pump.write(4095) catch continue;
+
+            // Turn the pump back off
+            if (comptime pump_active_low) {
+                pump.write(4095) catch continue;
+            } else {
+                pump.write(0) catch continue;
+            }
+        } else {
+            _ = printf("-\n");
         }
 
         idf.sleepMs(50);
@@ -202,6 +258,7 @@ pub const std_options: std.Options = .{
     .logFn = idf.log.espLogFn,
 };
 
+/// The lion does not concern himself with this
 export fn __udivti3() void {
     @panic("__udivti3: what are you doing here?");
 }
