@@ -83,7 +83,6 @@ const minimum_stone_cutoff: f32 = 10.0;
 
 const pump_active_low = false;
 
-// TODO(trevor): Examine linear scale versus of buckets
 fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness, comptime mode: enum { equation, buckets }) idf.sys.TickType_t {
     if (go_stones < minimum_stone_cutoff) return 0;
 
