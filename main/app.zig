@@ -82,7 +82,7 @@ const medium_upper_bound: f32 = 420.0;
 // Any number of go stones below this should not pump
 const minimum_stone_cutoff: f32 = 10.0;
 
-const pump_active_low = true;
+const pump_active_low = false;
 
 // TODO(trevor): Examine linear scale versus of buckets
 fn getDispenseTimeMs(go_stones: f32, dirt: Dirtiness) idf.sys.TickType_t {
